@@ -24,19 +24,9 @@ import win32gui
 import win32con
 import win32api
 import win32com.client
-
-try:
-    from ctypes import POINTER, cast
-    from comtypes import CLSCTX_ALL
-    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-    _HAS_CORE_AUDIO = True
-except ImportError:
-    _HAS_CORE_AUDIO = False
-    POINTER = None  # type: ignore
-    cast = None  # type: ignore
-    CLSCTX_ALL = None  # type: ignore
-    AudioUtilities = None  # type: ignore
-    IAudioEndpointVolume = None  # type: ignore
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
 # ---------------- HOTKEYS ----------------
 LEFT_HOTKEY  = "f13"
@@ -44,33 +34,28 @@ MAX_HOTKEY   = "f14"
 RIGHT_HOTKEY = "f15"
 
 REFRESH_HOTKEY   = "f16"
-TAB_PREV_HOTKEY  = "f17"
-TAB_NEXT_HOTKEY  = "f18"
-DESKTOP_HOTKEY   = "f21"
-VOL_DOWN_HOTKEY  = "f19"
-VOL_UP_HOTKEY    = "f20"
+PREV_TAB_HOTKEY  = "f17"
+NEXT_TAB_HOTKEY  = "f18"
+VOLUME_DOWN_HOTKEY = "f19"
+VOLUME_UP_HOTKEY   = "f20"
+TOGGLE_DESKTOP_HOTKEY = "f21"
 
 # ---------------- WINDOW CYCLE SETTINGS ----------------
 WIDTHS = [0.5040, 0.3372, 0.6707]
 TOL_PX = 2
 DEBOUNCE_SEC = 0.10
+TAB_REPEAT_INITIAL_SEC = 0.35
+TAB_REPEAT_SEC = 0.12
 _last_trigger = 0.0
 
-# ---------------- VOLUME REPEAT ----------------
-VOL_REPEAT_START_SEC = 0.0
-VOL_REPEAT_INTERVAL_SEC = 0.03
-VOL_STEP = 0.01  # 1% per step
-_vol_repeat = {
-    "down": {"thread": None, "stop_event": None},
-    "up": {"thread": None, "stop_event": None},
-}
-
-_endpoint_volume = None
 KEYEVENTF_KEYUP = 0x0002
 VK_CONTROL = 0x11
+VK_F5 = 0x74
 VK_SHIFT = 0x10
 VK_TAB = 0x09
-VK_F5 = 0x74
+
+_volume_endpoint = None
+_tab_state = {}
 
 
 def _debounced() -> bool:
@@ -192,122 +177,9 @@ def _maximize_restore_active_window():
         win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
 
 
-def _toggle_desktop():
-    # Reliable "Show Desktop" toggle via Shell COM
-    shell = win32com.client.Dispatch("Shell.Application")
-    shell.ToggleDesktop()
-
-
-def _get_endpoint_volume():
-    global _endpoint_volume
-    if not _HAS_CORE_AUDIO:
-        return None
-    if _endpoint_volume is not None:
-        return _endpoint_volume
-    try:
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        _endpoint_volume = cast(interface, POINTER(IAudioEndpointVolume))
-    except Exception:
-        _endpoint_volume = None
-    return _endpoint_volume
-
-
-def _volume_step(direction: str):
-    endpoint = _get_endpoint_volume()
-    if not endpoint:
-        return
-    try:
-        current = endpoint.GetMasterVolumeLevelScalar()
-        delta = VOL_STEP if direction == "up" else -VOL_STEP
-        target = min(1.0, max(0.0, current + delta))
-        endpoint.SetMasterVolumeLevelScalar(target, None)
-    except Exception:
-        pass
-
-
-def _volume_repeat_runner(direction: str, step_fn):
-    stop_event = _vol_repeat[direction]["stop_event"]
-    # Repeat as long as the key stays down; no initial lag
-    if stop_event and stop_event.wait(VOL_REPEAT_START_SEC):
-        return
-    while stop_event and not stop_event.wait(VOL_REPEAT_INTERVAL_SEC):
-        step_fn()
-    _vol_repeat[direction]["thread"] = None
-    _vol_repeat[direction]["stop_event"] = None
-
-
-def _start_volume_repeat(direction: str, step_fn):
-    state = _vol_repeat[direction]
-    if state["thread"] and state["thread"].is_alive():
-        return
-    stop_event = threading.Event()
-    state["stop_event"] = stop_event
-    step_fn()  # immediate first step
-    t = threading.Thread(
-        target=_volume_repeat_runner,
-        args=(direction, step_fn),
-        daemon=True,
-    )
-    state["thread"] = t
-    t.start()
-
-
-def _stop_volume_repeat(direction: str):
-    state = _vol_repeat[direction]
-    stop_event = state.get("stop_event")
-    if stop_event:
-        stop_event.set()
-    t = state.get("thread")
-    if t and t.is_alive():
-        t.join(timeout=0.35)
-    state["thread"] = None
-    state["stop_event"] = None
-
-
-def _volume_down_press():
-    _start_volume_repeat("down", lambda: _volume_step("down"))
-
-
-def _volume_down_release():
-    _stop_volume_repeat("down")
-
-
-def _volume_up_press():
-    _start_volume_repeat("up", lambda: _volume_step("up"))
-
-
-def _volume_up_release():
-    _stop_volume_repeat("up")
-
-
 def _key_event(vk: int, up: bool = False):
     flags = KEYEVENTF_KEYUP if up else 0
     ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
-
-
-def _send_tab_combo(reverse: bool):
-    if reverse:
-        _key_event(VK_CONTROL)
-        _key_event(VK_SHIFT)
-        _key_event(VK_TAB)
-        _key_event(VK_TAB, up=True)
-        _key_event(VK_SHIFT, up=True)
-        _key_event(VK_CONTROL, up=True)
-    else:
-        _key_event(VK_SHIFT, up=True)  # ensure shift not held
-        _key_event(VK_CONTROL)
-        _key_event(VK_TAB)
-        _key_event(VK_TAB, up=True)
-        _key_event(VK_CONTROL, up=True)
-
-
-def _next_tab():
-    _send_tab_combo(reverse=False)
-
-
-def _prev_tab():
-    _send_tab_combo(reverse=True)
 
 
 def _hard_refresh():
@@ -317,22 +189,108 @@ def _hard_refresh():
     _key_event(VK_CONTROL, up=True)
 
 
-def main():
-    if not _HAS_CORE_AUDIO:
-        print("Volume hotkeys need pycaw + comtypes installed for direct control.")
+def _send_tab_combo(shift: bool):
+    mods = [VK_CONTROL]
+    if shift:
+        mods.append(VK_SHIFT)
 
+    for key in mods:
+        _key_event(key)
+
+    _key_event(VK_TAB)
+    _key_event(VK_TAB, up=True)
+
+    for key in reversed(mods):
+        _key_event(key, up=True)
+
+
+def _prev_tab():
+    _send_tab_combo(shift=True)
+
+
+def _next_tab():
+    _send_tab_combo(shift=False)
+
+
+def _tab_press(name: str, shift: bool):
+    # Ignore auto-repeat while held; only fire once per physical press
+    if name in _tab_state:
+        return
+    stop_evt = threading.Event()
+    _tab_state[name] = stop_evt
+    print(f"{name.upper()} pressed -> {'Prev' if shift else 'Next'} tab (holding sends repeats)")
+
+    def _runner():
+        delay = TAB_REPEAT_INITIAL_SEC
+        while not stop_evt.wait(delay):
+            print(f"{name.upper()} tick -> {'Prev' if shift else 'Next'} tab")
+            _send_tab_combo(shift)
+            delay = TAB_REPEAT_SEC
+
+    # Fire immediately, then repeat in background while held
+    _send_tab_combo(shift)
+    threading.Thread(target=_runner, daemon=True).start()
+
+
+def _tab_release(name: str):
+    stop_evt = _tab_state.pop(name, None)
+    if stop_evt is None:
+        return
+    stop_evt.set()
+    print(f"{name.upper()} released")
+
+
+def _toggle_desktop():
+    try:
+        shell = win32com.client.Dispatch("Shell.Application")
+        shell.ToggleDesktop()
+    except Exception:
+        # Keep the hotkey resilient even if the COM object fails
+        pass
+
+
+def _get_volume_endpoint():
+    global _volume_endpoint
+    if _volume_endpoint is not None:
+        return _volume_endpoint
+
+    try:
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        _volume_endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+    except Exception:
+        _volume_endpoint = None
+    return _volume_endpoint
+
+
+def _volume_step(up: bool):
+    endpoint = _get_volume_endpoint()
+    if not endpoint:
+        return
+
+    try:
+        if up:
+            endpoint.VolumeStepUp(None)
+        else:
+            endpoint.VolumeStepDown(None)
+    except Exception:
+        # Silently ignore audio failures to keep the hotkey loop alive
+        pass
+
+
+def main():
     keyboard.add_hotkey(LEFT_HOTKEY, _cycle_left)
     keyboard.add_hotkey(MAX_HOTKEY, _maximize_restore_active_window)
     keyboard.add_hotkey(RIGHT_HOTKEY, _cycle_right)
 
     keyboard.add_hotkey(REFRESH_HOTKEY, _hard_refresh)
-    keyboard.add_hotkey(TAB_PREV_HOTKEY, _prev_tab)
-    keyboard.add_hotkey(TAB_NEXT_HOTKEY, _next_tab)
-    keyboard.add_hotkey(DESKTOP_HOTKEY, _toggle_desktop)
-    keyboard.add_hotkey(VOL_DOWN_HOTKEY, _volume_down_press)
-    keyboard.add_hotkey(VOL_DOWN_HOTKEY, _volume_down_release, trigger_on_release=True)
-    keyboard.add_hotkey(VOL_UP_HOTKEY, _volume_up_press)
-    keyboard.add_hotkey(VOL_UP_HOTKEY, _volume_up_release, trigger_on_release=True)
+    keyboard.on_press_key(PREV_TAB_HOTKEY, lambda e: _tab_press(PREV_TAB_HOTKEY, shift=True))
+    keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
+    keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
+    keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
+    keyboard.add_hotkey(TOGGLE_DESKTOP_HOTKEY, _toggle_desktop)
+    keyboard.add_hotkey(VOLUME_DOWN_HOTKEY, lambda: _volume_step(up=False))
+    keyboard.add_hotkey(VOLUME_UP_HOTKEY, lambda: _volume_step(up=True))
 
     print("Hotkeys active:")
     print("  F13              LEFT cycle")
