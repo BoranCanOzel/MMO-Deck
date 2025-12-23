@@ -8,9 +8,9 @@ Hotkeys:
   F16               -> Hard Refresh (Ctrl+F5)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
-  F21               -> Toggle Desktop (Shell.Application.ToggleDesktop)
-  F19               -> Volume Down (direct)
-  F20               -> Volume Up (direct)
+  F22               -> Toggle Desktop (Win+D)
+  F23               -> Volume Down (direct)
+  F24               -> Volume Up (direct)
 
 Install:
   pip install keyboard pywin32 pycaw comtypes
@@ -24,6 +24,7 @@ import win32gui
 import win32con
 import win32api
 import win32com.client
+import pythoncom
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -36,9 +37,9 @@ RIGHT_HOTKEY = "f15"
 REFRESH_HOTKEY   = "f16"
 PREV_TAB_HOTKEY  = "f17"
 NEXT_TAB_HOTKEY  = "f18"
-VOLUME_DOWN_HOTKEY = "f19"
-VOLUME_UP_HOTKEY   = "f20"
-TOGGLE_DESKTOP_HOTKEY = "f21"
+VOLUME_DOWN_HOTKEY = "f23"
+VOLUME_UP_HOTKEY   = "f24"
+TOGGLE_DESKTOP_HOTKEY = "f22"
 
 # ---------------- WINDOW CYCLE SETTINGS ----------------
 WIDTHS = [0.5040, 0.3372, 0.6707]
@@ -46,6 +47,12 @@ TOL_PX = 2
 DEBOUNCE_SEC = 0.10
 TAB_REPEAT_INITIAL_SEC = 0.35
 TAB_REPEAT_SEC = 0.12
+VOLUME_REPEAT_INITIAL_SEC = 0.35
+VOLUME_REPEAT_SEC = 0.03
+VOLUME_STEP = 0.04  # 4% increments
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
 _last_trigger = 0.0
 
 KEYEVENTF_KEYUP = 0x0002
@@ -53,9 +60,16 @@ VK_CONTROL = 0x11
 VK_F5 = 0x74
 VK_SHIFT = 0x10
 VK_TAB = 0x09
+VK_LWIN = 0x5B
+VK_D = 0x44
+VK_VOLUME_UP = 0xAF
+VK_VOLUME_DOWN = 0xAE
 
 _volume_endpoint = None
 _tab_state = {}
+_volume_state = {}
+_toggle_state = set()
+_shell_app = None
 
 
 def _debounced() -> bool:
@@ -240,13 +254,69 @@ def _tab_release(name: str):
     print(f"{name.upper()} released")
 
 
-def _toggle_desktop():
+def _win_d_chord():
+    # Send Win+D with aggressive key-up to avoid Win sticking (and Win+P)
+    _key_event(VK_D, up=True)
+    _key_event(VK_LWIN, up=True)
+    time.sleep(0.005)
+    _key_event(VK_LWIN)
+    time.sleep(0.005)
+    _key_event(VK_D)
+    time.sleep(0.015)  # let Windows register the chord
+    _key_event(VK_D, up=True)
+    _key_event(VK_LWIN, up=True)
+    _key_event(VK_LWIN, up=True)  # extra release guard
+
+
+def _get_shell_app():
+    global _shell_app
+    if _shell_app is not None:
+        return _shell_app
     try:
-        shell = win32com.client.Dispatch("Shell.Application")
-        shell.ToggleDesktop()
+        pythoncom.CoInitialize()
+        _shell_app = win32com.client.Dispatch("Shell.Application")
     except Exception:
-        # Keep the hotkey resilient even if the COM object fails
-        pass
+        _shell_app = None
+    finally:
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+    return _shell_app
+
+
+def _toggle_desktop():
+    # Prefer Shell.ToggleDesktop for proper toggle; fall back to a Win+D chord
+    shell = _get_shell_app()
+    if shell:
+        try:
+            pythoncom.CoInitialize()
+            shell.ToggleDesktop()
+            return
+        except Exception:
+            pass
+        finally:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    try:
+        _win_d_chord()
+    except Exception:
+        pass  # keep hotkey resilient
+
+
+def _toggle_desktop_press(name: str):
+    # Fire only once per physical press (ignore OS key auto-repeat)
+    if name in _toggle_state:
+        return
+    _toggle_state.add(name)
+    _toggle_desktop()
+
+
+def _toggle_desktop_release(name: str):
+    _toggle_state.discard(name)
 
 
 def _get_volume_endpoint():
@@ -263,22 +333,69 @@ def _get_volume_endpoint():
     return _volume_endpoint
 
 
+def _volume_keypress(up: bool):
+    # Hardware-style key events as a fallback if pycaw fails
+    vk = VK_VOLUME_UP if up else VK_VOLUME_DOWN
+    _key_event(vk)
+
+
 def _volume_step(up: bool):
     endpoint = _get_volume_endpoint()
     if not endpoint:
+        _volume_keypress(up)
         return
 
     try:
-        if up:
-            endpoint.VolumeStepUp(None)
-        else:
-            endpoint.VolumeStepDown(None)
+        current = endpoint.GetMasterVolumeLevelScalar()
+        delta = VOLUME_STEP if up else -VOLUME_STEP
+        target = max(0.0, min(1.0, current + delta))
+        endpoint.SetMasterVolumeLevelScalar(target, None)
     except Exception:
-        # Silently ignore audio failures to keep the hotkey loop alive
-        pass
+        _volume_keypress(up)
+
+
+def _volume_press(name: str, up: bool):
+    if name in _volume_state:
+        return
+    stop_evt = threading.Event()
+    _volume_state[name] = stop_evt
+    print(f"{name.upper()} pressed -> Volume {'Up' if up else 'Down'} (holding repeats)")
+
+    def _runner():
+        delay = VOLUME_REPEAT_INITIAL_SEC
+        while not stop_evt.wait(delay):
+            _volume_step(up)
+            delay = VOLUME_REPEAT_SEC
+
+    _volume_step(up)  # immediate tap
+    threading.Thread(target=_runner, daemon=True).start()
+
+
+def _volume_release(name: str):
+    stop_evt = _volume_state.pop(name, None)
+    if not stop_evt:
+        return
+    stop_evt.set()
+    print(f"{name.upper()} released")
+
+
+def _prevent_sleep():
+    # Keep the system awake while the hotkey listener runs
+    kernel32 = ctypes.windll.kernel32
+    prev = kernel32.SetThreadExecutionState(
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    )
+    return prev
+
+
+def _allow_sleep(prev_state):
+    # Restore previous execution state on exit
+    ctypes.windll.kernel32.SetThreadExecutionState(prev_state or ES_CONTINUOUS)
 
 
 def main():
+    prev_state = _prevent_sleep()
+
     keyboard.add_hotkey(LEFT_HOTKEY, _cycle_left)
     keyboard.add_hotkey(MAX_HOTKEY, _maximize_restore_active_window)
     keyboard.add_hotkey(RIGHT_HOTKEY, _cycle_right)
@@ -288,9 +405,12 @@ def main():
     keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
     keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
-    keyboard.add_hotkey(TOGGLE_DESKTOP_HOTKEY, _toggle_desktop)
-    keyboard.add_hotkey(VOLUME_DOWN_HOTKEY, lambda: _volume_step(up=False))
-    keyboard.add_hotkey(VOLUME_UP_HOTKEY, lambda: _volume_step(up=True))
+    keyboard.on_press_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_press(TOGGLE_DESKTOP_HOTKEY))
+    keyboard.on_release_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_release(TOGGLE_DESKTOP_HOTKEY))
+    keyboard.on_press_key(VOLUME_DOWN_HOTKEY, lambda e: _volume_press(VOLUME_DOWN_HOTKEY, up=False))
+    keyboard.on_release_key(VOLUME_DOWN_HOTKEY, lambda e: _volume_release(VOLUME_DOWN_HOTKEY))
+    keyboard.on_press_key(VOLUME_UP_HOTKEY, lambda e: _volume_press(VOLUME_UP_HOTKEY, up=True))
+    keyboard.on_release_key(VOLUME_UP_HOTKEY, lambda e: _volume_release(VOLUME_UP_HOTKEY))
 
     print("Hotkeys active:")
     print("  F13              LEFT cycle")
@@ -299,11 +419,14 @@ def main():
     print("  F16              Hard Refresh (Ctrl+F5)")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
-    print("  F21              Toggle Desktop (API)")
-    print("  F19              Volume Down")
-    print("  F20              Volume Up")
+    print("  F22              Toggle Desktop (Win+D)")
+    print("  F23              Volume Down")
+    print("  F24              Volume Up")
     print("Ctrl+C to exit.")
-    keyboard.wait()
+    try:
+        keyboard.wait()
+    finally:
+        _allow_sleep(prev_state)
 
 
 if __name__ == "__main__":
