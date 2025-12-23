@@ -63,6 +63,8 @@ VOLUME_REPEAT_SEC = 0.03
 
 # Browser detection
 BROWSER_PROCESSES = {"chrome.exe"}
+
+REFRESH_HOLD_THRESHOLD_SEC = 0.40
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
@@ -89,7 +91,7 @@ _tab_state = {}
 _volume_state = {}
 _toggle_state = set()
 _shell_app = None
-_refresh_state = False
+_refresh_state = {}
 
 
 def _debounced() -> bool:
@@ -275,6 +277,24 @@ def _hard_refresh():
         _key_event(VK_F5, up=True)
         _key_event(VK_CONTROL, up=True)
     else:
+        _send_ctrl_slash()
+
+
+def _refresh_tap():
+    if _is_browser_window():
+        print("Refresh: browser (Ctrl+R)")
+        keyboard.send("ctrl+r")
+    else:
+        print("Refresh: non-browser (Ctrl+/)")
+        _send_ctrl_slash()
+
+
+def _refresh_hold():
+    if _is_browser_window():
+        print("Hard refresh: browser (Ctrl+F5)")
+        _hard_refresh()
+    else:
+        print("Refresh (hold): non-browser (Ctrl+/)")
         _send_ctrl_slash()
 
 
@@ -504,15 +524,30 @@ def _allow_sleep(prev_state):
 
 def _refresh_press(name: str):
     global _refresh_state
-    if _refresh_state:
+    if _refresh_state.get("active"):
         return
-    _refresh_state = True
-    _hard_refresh()
+    _refresh_state = {"active": True, "hold": False}
+
+    def _hold_action():
+        # If still active when timer fires, treat as hold
+        if _refresh_state.get("active"):
+            _refresh_state["hold"] = True
+            _refresh_hold()
+
+    timer = threading.Timer(REFRESH_HOLD_THRESHOLD_SEC, _hold_action)
+    _refresh_state["timer"] = timer
+    timer.start()
 
 
 def _refresh_release(name: str):
     global _refresh_state
-    _refresh_state = False
+    state = _refresh_state if isinstance(_refresh_state, dict) else {}
+    timer = state.get("timer")
+    if timer:
+        timer.cancel()
+    if state.get("active") and not state.get("hold"):
+        _refresh_tap()
+    _refresh_state = {}
 
 
 def main():
