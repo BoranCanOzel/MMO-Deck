@@ -5,6 +5,8 @@ Hotkeys:
   F13               -> cycle LEFT widths
   F14               -> Maximize/Restore active window (ShowWindow)
   F15               -> cycle RIGHT widths
+  Shift+F13         -> Cycle BOTTOM heights (Y axis)
+  Shift+F15         -> Cycle TOP heights (Y axis)
   F16               -> Tap: Refresh (Ctrl+R / Ctrl+/), Hold: Hard Refresh (Ctrl+F5 or Ctrl+/)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
@@ -53,6 +55,7 @@ RIGHT_HOTKEY = "f15"
 REFRESH_HOTKEY   = "f16"
 PREV_TAB_HOTKEY  = "f17"
 NEXT_TAB_HOTKEY  = "f18"
+
 BROWSER_BACK_HOTKEY = "shift+f23"
 BROWSER_FORWARD_HOTKEY = "shift+f24"
 VOLUME_DOWN_HOTKEY = "f23"
@@ -312,6 +315,125 @@ def _cycle_left():
 
 def _cycle_right():
     _cycle_widths("right")
+
+
+def _clamp_width_to_work_area(rect, work_area):
+    wl, _, wr, _ = work_area
+    l, t, r, b = rect
+    width = r - l
+    max_width = wr - wl
+
+    if width > max_width:
+        width = max_width
+    l = max(wl, l)
+    if l + width > wr:
+        l = wr - width
+    r = l + width
+    return (l, t, r, b)
+
+
+def _make_vertical_target_rects(work_area, height_ratios, anchor: str, current_rect):
+    wl, wt, wr, wb = work_area
+    work_h = wb - wt
+    l, _, r, _ = _clamp_width_to_work_area(current_rect, work_area)
+    targets = []
+    for hr in height_ratios:
+        h = int(round(work_h * hr))
+        h = min(h, work_h)
+        if anchor == "top":
+            t = wt
+            b = wt + h
+        elif anchor == "bottom":
+            b = wb
+            t = wb - h
+        else:
+            raise ValueError("anchor must be 'top' or 'bottom'")
+        targets.append((l, t, r, b))
+    return targets
+
+
+def _cycle_heights(anchor: str):
+    if not _debounced():
+        return
+
+    hwnd = _get_foreground_window()
+    if not hwnd or _is_ignorable_window(hwnd):
+        return
+
+    placement = win32gui.GetWindowPlacement(hwnd)
+    is_maximized = (placement[1] == win32con.SW_SHOWMAXIMIZED)
+    if is_maximized:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        current = _get_window_rect(hwnd)
+    else:
+        current = _get_window_rect(hwnd)
+
+    work_area = _get_monitor_work_area_for_window(hwnd)
+    targets = _make_vertical_target_rects(work_area, WINDOW_WIDTHS, anchor, current)
+
+    next_rect = targets[0]
+    for i, tr in enumerate(targets):
+        if _rect_close(current, tr):
+            next_rect = targets[(i + 1) % len(targets)]
+            break
+
+    _set_window_rect(hwnd, next_rect)
+
+
+def _cycle_bottom_heights():
+    _cycle_heights("bottom")
+
+
+def _cycle_top_heights():
+    _cycle_heights("top")
+
+
+def _set_vertical_position(position: str):
+    if not _debounced():
+        return
+
+    hwnd = _get_foreground_window()
+    if not hwnd or _is_ignorable_window(hwnd):
+        return
+
+    if position != "full":
+        placement = win32gui.GetWindowPlacement(hwnd)
+        if placement[1] == win32con.SW_SHOWMAXIMIZED:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+    work_area = _get_monitor_work_area_for_window(hwnd)
+    wl, wt, wr, wb = work_area
+    work_h = wb - wt
+
+    cur_rect = _get_window_rect(hwnd)
+    cur_rect = _clamp_width_to_work_area(cur_rect, work_area)
+    l, _, r, _ = cur_rect
+
+    if position == "top":
+        t = wt
+        b = wt + int(round(work_h * 0.5))
+    elif position == "bottom":
+        b = wb
+        t = wb - int(round(work_h * 0.5))
+    elif position == "full":
+        t = wt
+        b = wb
+    else:
+        raise ValueError("position must be 'top', 'bottom', or 'full'")
+
+    _set_window_rect(hwnd, (l, t, r, b))
+
+
+def _set_top_half():
+    _set_vertical_position("top")
+
+
+def _set_bottom_half():
+    _set_vertical_position("bottom")
+
+
+def _set_full_height():
+    _set_vertical_position("full")
 
 
 def _maximize_restore_active_window():
@@ -693,9 +815,9 @@ def _build_gui():
 def main():
     prev_state = _prevent_sleep()
 
-    keyboard.add_hotkey(LEFT_HOTKEY, _cycle_left)
+    keyboard.on_press_key(LEFT_HOTKEY, lambda e: _cycle_bottom_heights() if keyboard.is_pressed("shift") else _cycle_left())
     keyboard.add_hotkey(MAX_HOTKEY, _maximize_restore_active_window)
-    keyboard.add_hotkey(RIGHT_HOTKEY, _cycle_right)
+    keyboard.on_press_key(RIGHT_HOTKEY, lambda e: _cycle_top_heights() if keyboard.is_pressed("shift") else _cycle_right())
 
     keyboard.on_press_key(REFRESH_HOTKEY, lambda e: _refresh_press(REFRESH_HOTKEY))
     keyboard.on_release_key(REFRESH_HOTKEY, lambda e: _refresh_release(REFRESH_HOTKEY))
@@ -714,6 +836,8 @@ def main():
     print("  F13              LEFT cycle")
     print("  F14              Maximize/Restore (API)")
     print("  F15              RIGHT cycle")
+    print("  Shift+F13        Cycle BOTTOM heights (Y axis)")
+    print("  Shift+F15        Cycle TOP heights (Y axis)")
     print("  F16              Tap: Refresh / Hold: Hard Refresh")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
