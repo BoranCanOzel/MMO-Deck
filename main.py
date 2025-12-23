@@ -8,8 +8,8 @@ Hotkeys:
   F16               -> Hard Refresh (Ctrl+F5)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
-  Shift+F23         -> Browser Back (Alt+Left)
-  Shift+F24         -> Browser Forward (Alt+Right)
+  Shift+F23         -> Browser Back (Alt+Left, only in Chrome)
+  Shift+F24         -> Browser Forward (Alt+Right, only in Chrome)
   F22               -> Toggle Desktop (Win+D)
   F23               -> Volume Down (direct)
   F24               -> Volume Up (direct)
@@ -18,6 +18,7 @@ Install:
   pip install keyboard pywin32 pycaw comtypes
 """
 
+import os
 import time
 import ctypes
 import threading
@@ -27,6 +28,7 @@ import win32con
 import win32api
 import win32com.client
 import pythoncom
+import win32process
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -39,11 +41,11 @@ RIGHT_HOTKEY = "f15"
 REFRESH_HOTKEY   = "f16"
 PREV_TAB_HOTKEY  = "f17"
 NEXT_TAB_HOTKEY  = "f18"
+BROWSER_BACK_HOTKEY = "shift+f23"
+BROWSER_FORWARD_HOTKEY = "shift+f24"
 VOLUME_DOWN_HOTKEY = "f23"
 VOLUME_UP_HOTKEY   = "f24"
 TOGGLE_DESKTOP_HOTKEY = "f22"
-BROWSER_BACK_HOTKEY = "shift+f23"
-BROWSER_FORWARD_HOTKEY = "shift+f24"
 
 # ---------------- TUNING KNOBS ----------------
 # Window sizing
@@ -58,6 +60,9 @@ TAB_REPEAT_SEC = 0.12
 # Volume
 VOLUME_REPEAT_INITIAL_SEC = 0.35
 VOLUME_REPEAT_SEC = 0.03
+
+# Browser detection
+BROWSER_PROCESSES = {"chrome.exe"}
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
@@ -95,6 +100,31 @@ def _debounced() -> bool:
 def _get_foreground_window():
     hwnd = win32gui.GetForegroundWindow()
     return hwnd if hwnd else None
+
+
+def _get_foreground_process_name():
+    hwnd = _get_foreground_window()
+    if not hwnd:
+        return None
+    try:
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        handle = win32api.OpenProcess(
+            win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ,
+            False,
+            pid,
+        )
+        try:
+            exe = win32process.GetModuleFileNameEx(handle, 0)
+            return os.path.basename(exe).lower()
+        finally:
+            win32api.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _is_browser_window():
+    proc = _get_foreground_process_name()
+    return proc in BROWSER_PROCESSES if proc else False
 
 
 def _is_ignorable_window(hwnd: int) -> bool:
@@ -386,6 +416,34 @@ def _volume_release(name: str):
         stop_evt.set()
 
 
+def _handle_f23_press(e):
+    if keyboard.is_pressed("shift"):
+        if _is_browser_window():
+            _browser_nav(back=True)
+        return
+    _volume_press(VOLUME_DOWN_HOTKEY, up=False)
+
+
+def _handle_f23_release(e):
+    if keyboard.is_pressed("shift"):
+        return
+    _volume_release(VOLUME_DOWN_HOTKEY)
+
+
+def _handle_f24_press(e):
+    if keyboard.is_pressed("shift"):
+        if _is_browser_window():
+            _browser_nav(back=False)
+        return
+    _volume_press(VOLUME_UP_HOTKEY, up=True)
+
+
+def _handle_f24_release(e):
+    if keyboard.is_pressed("shift"):
+        return
+    _volume_release(VOLUME_UP_HOTKEY)
+
+
 def _prevent_sleep():
     # Keep the system awake while the hotkey listener runs
     kernel32 = ctypes.windll.kernel32
@@ -412,14 +470,12 @@ def main():
     keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
     keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
-    keyboard.add_hotkey(BROWSER_BACK_HOTKEY, lambda: _browser_nav(back=True))
-    keyboard.add_hotkey(BROWSER_FORWARD_HOTKEY, lambda: _browser_nav(back=False))
     keyboard.on_press_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_press(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_release_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_release(TOGGLE_DESKTOP_HOTKEY))
-    keyboard.on_press_key(VOLUME_DOWN_HOTKEY, lambda e: _volume_press(VOLUME_DOWN_HOTKEY, up=False))
-    keyboard.on_release_key(VOLUME_DOWN_HOTKEY, lambda e: _volume_release(VOLUME_DOWN_HOTKEY))
-    keyboard.on_press_key(VOLUME_UP_HOTKEY, lambda e: _volume_press(VOLUME_UP_HOTKEY, up=True))
-    keyboard.on_release_key(VOLUME_UP_HOTKEY, lambda e: _volume_release(VOLUME_UP_HOTKEY))
+    keyboard.on_press_key(VOLUME_DOWN_HOTKEY, _handle_f23_press)
+    keyboard.on_release_key(VOLUME_DOWN_HOTKEY, _handle_f23_release)
+    keyboard.on_press_key(VOLUME_UP_HOTKEY, _handle_f24_press)
+    keyboard.on_release_key(VOLUME_UP_HOTKEY, _handle_f24_release)
 
     print("Hotkeys active:")
     print("  F13              LEFT cycle")
