@@ -73,9 +73,12 @@ VK_CONTROL = 0x11
 VK_F5 = 0x74
 VK_SHIFT = 0x10
 VK_TAB = 0x09
+VK_PRIOR = 0x21  # Page Up
+VK_NEXT = 0x22   # Page Down
 VK_MENU = 0x12
 VK_LEFT = 0x25
 VK_RIGHT = 0x27
+VK_OEM_2 = 0xBF  # '/' key
 VK_LWIN = 0x5B
 VK_D = 0x44
 VK_VOLUME_UP = 0xAF
@@ -86,6 +89,7 @@ _tab_state = {}
 _volume_state = {}
 _toggle_state = set()
 _shell_app = None
+_refresh_state = False
 
 
 def _debounced() -> bool:
@@ -125,6 +129,33 @@ def _get_foreground_process_name():
 def _is_browser_window():
     proc = _get_foreground_process_name()
     return proc in BROWSER_PROCESSES if proc else False
+
+
+def _send_ctrl_combo(key: str):
+    # Temporarily release Shift so we don't send Ctrl+Shift+key
+    had_shift = keyboard.is_pressed("shift")
+    if had_shift:
+        keyboard.release("shift")
+    try:
+        keyboard.send(f"ctrl+{key}")
+    finally:
+        if had_shift:
+            keyboard.press("shift")
+
+
+def _send_ctrl_slash():
+    # Send Ctrl + '/' reliably, releasing Shift if held
+    had_shift = keyboard.is_pressed("shift")
+    if had_shift:
+        keyboard.release("shift")
+    try:
+        _key_event(VK_CONTROL)
+        _key_event(VK_OEM_2)
+        _key_event(VK_OEM_2, up=True)
+        _key_event(VK_CONTROL, up=True)
+    finally:
+        if had_shift:
+            keyboard.press("shift")
 
 
 def _is_ignorable_window(hwnd: int) -> bool:
@@ -238,25 +269,30 @@ def _key_event(vk: int, up: bool = False):
 
 
 def _hard_refresh():
-    _key_event(VK_CONTROL)
-    _key_event(VK_F5)
-    _key_event(VK_F5, up=True)
-    _key_event(VK_CONTROL, up=True)
+    if _is_browser_window():
+        _key_event(VK_CONTROL)
+        _key_event(VK_F5)
+        _key_event(VK_F5, up=True)
+        _key_event(VK_CONTROL, up=True)
+    else:
+        _send_ctrl_slash()
 
 
 def _send_tab_combo(shift: bool):
-    mods = [VK_CONTROL]
-    if shift:
-        mods.append(VK_SHIFT)
-
-    for key in mods:
-        _key_event(key)
-
-    _key_event(VK_TAB)
-    _key_event(VK_TAB, up=True)
-
-    for key in reversed(mods):
-        _key_event(key, up=True)
+    if _is_browser_window():
+        # Browser: Ctrl+Tab / Ctrl+Shift+Tab
+        mods = [VK_CONTROL]
+        if shift:
+            mods.append(VK_SHIFT)
+        for key in mods:
+            _key_event(key)
+        _key_event(VK_TAB)
+        _key_event(VK_TAB, up=True)
+        for key in reversed(mods):
+            _key_event(key, up=True)
+    else:
+        # Non-browser: Ctrl+PgUp / Ctrl+PgDn via keyboard for reliability
+        keyboard.send("ctrl+page up" if shift else "ctrl+page down")
 
 
 def _prev_tab():
@@ -417,9 +453,13 @@ def _volume_release(name: str):
 
 
 def _handle_f23_press(e):
+    proc = _get_foreground_process_name()
+    print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
         if _is_browser_window():
             _browser_nav(back=True)
+        else:
+            _send_ctrl_combo("z")
         return
     _volume_press(VOLUME_DOWN_HOTKEY, up=False)
 
@@ -431,9 +471,13 @@ def _handle_f23_release(e):
 
 
 def _handle_f24_press(e):
+    proc = _get_foreground_process_name()
+    print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
         if _is_browser_window():
             _browser_nav(back=False)
+        else:
+            _send_ctrl_combo("y")
         return
     _volume_press(VOLUME_UP_HOTKEY, up=True)
 
@@ -458,6 +502,19 @@ def _allow_sleep(prev_state):
     ctypes.windll.kernel32.SetThreadExecutionState(prev_state or ES_CONTINUOUS)
 
 
+def _refresh_press(name: str):
+    global _refresh_state
+    if _refresh_state:
+        return
+    _refresh_state = True
+    _hard_refresh()
+
+
+def _refresh_release(name: str):
+    global _refresh_state
+    _refresh_state = False
+
+
 def main():
     prev_state = _prevent_sleep()
 
@@ -465,7 +522,8 @@ def main():
     keyboard.add_hotkey(MAX_HOTKEY, _maximize_restore_active_window)
     keyboard.add_hotkey(RIGHT_HOTKEY, _cycle_right)
 
-    keyboard.add_hotkey(REFRESH_HOTKEY, _hard_refresh)
+    keyboard.on_press_key(REFRESH_HOTKEY, lambda e: _refresh_press(REFRESH_HOTKEY))
+    keyboard.on_release_key(REFRESH_HOTKEY, lambda e: _refresh_release(REFRESH_HOTKEY))
     keyboard.on_press_key(PREV_TAB_HOTKEY, lambda e: _tab_press(PREV_TAB_HOTKEY, shift=True))
     keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
