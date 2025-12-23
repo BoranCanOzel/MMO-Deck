@@ -5,7 +5,7 @@ Hotkeys:
   F13               -> cycle LEFT widths
   F14               -> Maximize/Restore active window (ShowWindow)
   F15               -> cycle RIGHT widths
-  F16               -> Hard Refresh (Ctrl+F5)
+  F16               -> Tap: Refresh (Ctrl+R / Ctrl+/), Hold: Hard Refresh (Ctrl+F5 or Ctrl+/)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
   Shift+F23         -> Browser Back (Alt+Left, only in Chrome)
@@ -19,9 +19,13 @@ Install:
 """
 
 import os
+import sys
 import time
 import ctypes
 import threading
+import tkinter as tk
+from tkinter import ttk
+
 import keyboard
 import win32gui
 import win32con
@@ -32,6 +36,14 @@ import win32process
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except Exception:
+    pystray = None
+    Image = None
+    ImageDraw = None
 
 # ---------------- HOTKEYS ----------------
 LEFT_HOTKEY  = "f13"
@@ -65,6 +77,8 @@ VOLUME_REPEAT_SEC = 0.03
 BROWSER_PROCESSES = {"chrome.exe"}
 
 REFRESH_HOLD_THRESHOLD_SEC = 0.40
+APP_NAME = "MMO Deck"
+STARTUP_LINK_NAME = "MMO Deck.lnk"
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
@@ -92,6 +106,8 @@ _volume_state = {}
 _toggle_state = set()
 _shell_app = None
 _refresh_state = {}
+_tray_icon = None
+_root = None
 
 
 def _debounced() -> bool:
@@ -133,6 +149,38 @@ def _is_browser_window():
     return proc in BROWSER_PROCESSES if proc else False
 
 
+def _startup_shortcut_path():
+    startup_dir = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+    return os.path.join(startup_dir, STARTUP_LINK_NAME)
+
+
+def _add_to_startup():
+    try:
+        path = _startup_shortcut_path()
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortcut(path)
+        shortcut.TargetPath = sys.executable
+        shortcut.Arguments = f'"{os.path.abspath(sys.argv[0])}"'
+        shortcut.WorkingDirectory = os.path.dirname(os.path.abspath(sys.argv[0]))
+        shortcut.IconLocation = sys.executable
+        shortcut.Save()
+        print(f"Startup: added shortcut at {path}")
+    except Exception as exc:
+        print(f"Startup: failed to add ({exc})")
+
+
+def _remove_from_startup():
+    try:
+        path = _startup_shortcut_path()
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Startup: removed shortcut at {path}")
+        else:
+            print("Startup: no shortcut to remove")
+    except Exception as exc:
+        print(f"Startup: failed to remove ({exc})")
+
+
 def _send_ctrl_combo(key: str):
     # Temporarily release Shift so we don't send Ctrl+Shift+key
     had_shift = keyboard.is_pressed("shift")
@@ -158,6 +206,22 @@ def _send_ctrl_slash():
     finally:
         if had_shift:
             keyboard.press("shift")
+
+
+def _create_tray_image():
+    if Image is None:
+        return None
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "icon.ico")
+    try:
+        return Image.open(icon_path)
+    except Exception as exc:
+        print(f"Tray icon: failed to load {icon_path} ({exc}); using fallback.")
+        if ImageDraw is None:
+            return None
+        img = Image.new("RGB", (64, 64), (43, 119, 232))
+        d = ImageDraw.Draw(img)
+        d.rectangle([18, 18, 46, 46], fill=(255, 255, 255))
+        return img
 
 
 def _is_ignorable_window(hwnd: int) -> bool:
@@ -550,6 +614,82 @@ def _refresh_release(name: str):
     _refresh_state = {}
 
 
+def _hide_window(auto: bool = False):
+    if _root:
+        # On auto-hide, don't disappear if tray isn't available
+        if auto and not (pystray and Image):
+            print("Tray icon not available (pystray/Pillow missing); keeping window visible.")
+            return
+        _root.withdraw()  # hide from taskbar
+        if pystray and Image:
+            _start_tray()
+        else:
+            print("Tray icon not available (pystray/Pillow missing); window hidden.")
+
+
+def _show_window():
+    global _tray_icon
+    if _root:
+        _root.deiconify()
+        _root.lift()
+        _root.focus_force()
+    if _tray_icon:
+        _tray_icon.stop()
+        _tray_icon = None
+
+
+def _tray_quit(icon, item):
+    if _root:
+        _root.after(0, _root.quit)
+
+
+def _start_tray():
+    global _tray_icon
+    if _tray_icon or not pystray or not Image:
+        return
+
+    def on_show(icon, item):
+        _show_window()
+
+    def on_quit(icon, item):
+        _tray_quit(icon, item)
+
+    image = _create_tray_image()
+    _tray_icon = pystray.Icon(APP_NAME, image, APP_NAME, menu=pystray.Menu(
+        pystray.MenuItem("Show", on_show, default=True),  # double-click default
+        pystray.MenuItem("Quit", on_quit),
+    ))
+    threading.Thread(target=_tray_icon.run, daemon=True).start()
+
+
+def _auto_hide_on_start():
+    # Hide to tray right after launch if tray is available
+    if pystray and Image:
+        _hide_window(auto=True)
+    else:
+        print("Startup: tray dependencies missing; window will stay visible.")
+
+
+def _build_gui():
+    global _root
+    _root = tk.Tk()
+    _root.title(APP_NAME)
+    _root.geometry("360x230")
+    _root.protocol("WM_DELETE_WINDOW", _hide_window)
+
+    frame = ttk.Frame(_root, padding=12)
+    frame.pack(fill="both", expand=True)
+
+    ttk.Label(frame, text="MMO Deck Controls").pack(anchor="w")
+
+    ttk.Button(frame, text="Hide to tray", command=_hide_window).pack(fill="x", pady=4)
+    ttk.Button(frame, text="Add to Startup", command=_add_to_startup).pack(fill="x", pady=4)
+    ttk.Button(frame, text="Remove from Startup", command=_remove_from_startup).pack(fill="x", pady=4)
+    ttk.Button(frame, text="Quit", command=_root.quit).pack(fill="x", pady=12)
+
+    return _root
+
+
 def main():
     prev_state = _prevent_sleep()
 
@@ -574,7 +714,7 @@ def main():
     print("  F13              LEFT cycle")
     print("  F14              Maximize/Restore (API)")
     print("  F15              RIGHT cycle")
-    print("  F16              Hard Refresh (Ctrl+F5)")
+    print("  F16              Tap: Refresh / Hold: Hard Refresh")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
     print("  Shift+F23        Browser Back (Alt+Left)")
@@ -582,10 +722,18 @@ def main():
     print("  F22              Toggle Desktop (Win+D)")
     print("  F23              Volume Down")
     print("  F24              Volume Up")
-    print("Ctrl+C to exit.")
+    print("Close/hide via the GUI (tray) or Quit button.")
+
+    gui = _build_gui()
+    _auto_hide_on_start()
     try:
-        keyboard.wait()
+        gui.mainloop()
     finally:
+        if _tray_icon:
+            try:
+                _tray_icon.stop()
+            except Exception:
+                pass
         _allow_sleep(prev_state)
 
 
