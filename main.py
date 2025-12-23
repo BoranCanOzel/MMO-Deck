@@ -107,6 +107,7 @@ _volume_endpoint = None
 _tab_state = {}
 _volume_state = {}
 _toggle_state = set()
+_maximize_state = set()
 _shell_app = None
 _refresh_state = {}
 _tray_icon = None
@@ -601,6 +602,18 @@ def _toggle_desktop_release(name: str):
     _toggle_state.discard(name)
 
 
+def _maximize_press(name: str):
+    # Fire once per physical press to avoid rapid toggle on key repeat
+    if name in _maximize_state:
+        return
+    _maximize_state.add(name)
+    _maximize_restore_active_window()
+
+
+def _maximize_release(name: str):
+    _maximize_state.discard(name)
+
+
 def _get_volume_endpoint():
     global _volume_endpoint
     if _volume_endpoint is not None:
@@ -659,8 +672,9 @@ def _volume_release(name: str):
 
 
 def _handle_f23_press(e):
-    proc = _get_foreground_process_name()
-    print(f"Active process: {proc or 'unknown'}")
+    # Debug logging noisy during normal use; keep commented for troubleshooting.
+    # proc = _get_foreground_process_name()
+    # print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
         if _is_browser_window():
             _browser_nav(back=True)
@@ -677,8 +691,9 @@ def _handle_f23_release(e):
 
 
 def _handle_f24_press(e):
-    proc = _get_foreground_process_name()
-    print(f"Active process: {proc or 'unknown'}")
+    # Debug logging noisy during normal use; keep commented for troubleshooting.
+    # proc = _get_foreground_process_name()
+    # print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
         if _is_browser_window():
             _browser_nav(back=False)
@@ -816,7 +831,8 @@ def main():
     prev_state = _prevent_sleep()
 
     keyboard.on_press_key(LEFT_HOTKEY, lambda e: _cycle_bottom_heights() if keyboard.is_pressed("shift") else _cycle_left())
-    keyboard.add_hotkey(MAX_HOTKEY, _maximize_restore_active_window)
+    keyboard.on_press_key(MAX_HOTKEY, lambda e: _maximize_press(MAX_HOTKEY))
+    keyboard.on_release_key(MAX_HOTKEY, lambda e: _maximize_release(MAX_HOTKEY))
     keyboard.on_press_key(RIGHT_HOTKEY, lambda e: _cycle_top_heights() if keyboard.is_pressed("shift") else _cycle_right())
 
     keyboard.on_press_key(REFRESH_HOTKEY, lambda e: _refresh_press(REFRESH_HOTKEY))
