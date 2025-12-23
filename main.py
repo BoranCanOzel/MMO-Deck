@@ -1,5 +1,5 @@
 """
-Reliable API-based actions (no Win-key simulation).
+Hotkeys for window sizing, tab navigation, volume, refresh, and desktop toggle.
 
 Hotkeys:
   F13               -> cycle LEFT widths
@@ -8,6 +8,8 @@ Hotkeys:
   F16               -> Hard Refresh (Ctrl+F5)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
+  Shift+F23         -> Browser Back (Alt+Left)
+  Shift+F24         -> Browser Forward (Alt+Right)
   F22               -> Toggle Desktop (Win+D)
   F23               -> Volume Down (direct)
   F24               -> Volume Up (direct)
@@ -40,16 +42,22 @@ NEXT_TAB_HOTKEY  = "f18"
 VOLUME_DOWN_HOTKEY = "f23"
 VOLUME_UP_HOTKEY   = "f24"
 TOGGLE_DESKTOP_HOTKEY = "f22"
+BROWSER_BACK_HOTKEY = "shift+f23"
+BROWSER_FORWARD_HOTKEY = "shift+f24"
 
-# ---------------- WINDOW CYCLE SETTINGS ----------------
-WIDTHS = [0.5040, 0.3372, 0.6707]
-TOL_PX = 2
-DEBOUNCE_SEC = 0.10
+# ---------------- TUNING KNOBS ----------------
+# Window sizing
+WINDOW_WIDTHS = [0.5040, 0.3372, 0.6707]
+WINDOW_POS_TOL_PX = 2
+WINDOW_CYCLE_DEBOUNCE_SEC = 0.10
+
+# Tab navigation
 TAB_REPEAT_INITIAL_SEC = 0.35
 TAB_REPEAT_SEC = 0.12
+
+# Volume
 VOLUME_REPEAT_INITIAL_SEC = 0.35
 VOLUME_REPEAT_SEC = 0.03
-VOLUME_STEP = 0.04  # 4% increments
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
@@ -60,6 +68,9 @@ VK_CONTROL = 0x11
 VK_F5 = 0x74
 VK_SHIFT = 0x10
 VK_TAB = 0x09
+VK_MENU = 0x12
+VK_LEFT = 0x25
+VK_RIGHT = 0x27
 VK_LWIN = 0x5B
 VK_D = 0x44
 VK_VOLUME_UP = 0xAF
@@ -75,7 +86,7 @@ _shell_app = None
 def _debounced() -> bool:
     global _last_trigger
     now = time.time()
-    if now - _last_trigger < DEBOUNCE_SEC:
+    if now - _last_trigger < WINDOW_CYCLE_DEBOUNCE_SEC:
         return False
     _last_trigger = now
     return True
@@ -101,7 +112,7 @@ def _get_window_rect(hwnd: int):
     return win32gui.GetWindowRect(hwnd)
 
 
-def _rect_close(a, b, tol=TOL_PX) -> bool:
+def _rect_close(a, b, tol=WINDOW_POS_TOL_PX) -> bool:
     return all(abs(a[i] - b[i]) <= tol for i in range(4))
 
 
@@ -147,7 +158,7 @@ def _cycle_widths(side: str):
         return
 
     work_area = _get_monitor_work_area_for_window(hwnd)
-    targets = [_make_target_rect(work_area, w, side) for w in WIDTHS]
+    targets = [_make_target_rect(work_area, w, side) for w in WINDOW_WIDTHS]
 
     # IMPORTANT: if maximized, restart at 50.40% (targets[0])
     placement = win32gui.GetWindowPlacement(hwnd)
@@ -226,32 +237,34 @@ def _next_tab():
     _send_tab_combo(shift=False)
 
 
+def _browser_nav(back: bool):
+    # Alt+Left / Alt+Right for browser navigation
+    _key_event(VK_MENU)
+    _key_event(VK_LEFT if back else VK_RIGHT)
+    _key_event(VK_LEFT if back else VK_RIGHT, up=True)
+    _key_event(VK_MENU, up=True)
+
+
 def _tab_press(name: str, shift: bool):
-    # Ignore auto-repeat while held; only fire once per physical press
     if name in _tab_state:
         return
     stop_evt = threading.Event()
     _tab_state[name] = stop_evt
-    print(f"{name.upper()} pressed -> {'Prev' if shift else 'Next'} tab (holding sends repeats)")
+    _send_tab_combo(shift)
 
     def _runner():
         delay = TAB_REPEAT_INITIAL_SEC
         while not stop_evt.wait(delay):
-            print(f"{name.upper()} tick -> {'Prev' if shift else 'Next'} tab")
             _send_tab_combo(shift)
             delay = TAB_REPEAT_SEC
 
-    # Fire immediately, then repeat in background while held
-    _send_tab_combo(shift)
     threading.Thread(target=_runner, daemon=True).start()
 
 
 def _tab_release(name: str):
     stop_evt = _tab_state.pop(name, None)
-    if stop_evt is None:
-        return
-    stop_evt.set()
-    print(f"{name.upper()} released")
+    if stop_evt:
+        stop_evt.set()
 
 
 def _win_d_chord():
@@ -273,15 +286,9 @@ def _get_shell_app():
     if _shell_app is not None:
         return _shell_app
     try:
-        pythoncom.CoInitialize()
         _shell_app = win32com.client.Dispatch("Shell.Application")
     except Exception:
         _shell_app = None
-    finally:
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
     return _shell_app
 
 
@@ -291,6 +298,9 @@ def _toggle_desktop():
     if shell:
         try:
             pythoncom.CoInitialize()
+        except Exception:
+            pass
+        try:
             shell.ToggleDesktop()
             return
         except Exception:
@@ -346,10 +356,10 @@ def _volume_step(up: bool):
         return
 
     try:
-        current = endpoint.GetMasterVolumeLevelScalar()
-        delta = VOLUME_STEP if up else -VOLUME_STEP
-        target = max(0.0, min(1.0, current + delta))
-        endpoint.SetMasterVolumeLevelScalar(target, None)
+        if up:
+            endpoint.VolumeStepUp(None)
+        else:
+            endpoint.VolumeStepDown(None)
     except Exception:
         _volume_keypress(up)
 
@@ -359,7 +369,7 @@ def _volume_press(name: str, up: bool):
         return
     stop_evt = threading.Event()
     _volume_state[name] = stop_evt
-    print(f"{name.upper()} pressed -> Volume {'Up' if up else 'Down'} (holding repeats)")
+    _volume_step(up)
 
     def _runner():
         delay = VOLUME_REPEAT_INITIAL_SEC
@@ -367,16 +377,13 @@ def _volume_press(name: str, up: bool):
             _volume_step(up)
             delay = VOLUME_REPEAT_SEC
 
-    _volume_step(up)  # immediate tap
     threading.Thread(target=_runner, daemon=True).start()
 
 
 def _volume_release(name: str):
     stop_evt = _volume_state.pop(name, None)
-    if not stop_evt:
-        return
-    stop_evt.set()
-    print(f"{name.upper()} released")
+    if stop_evt:
+        stop_evt.set()
 
 
 def _prevent_sleep():
@@ -405,6 +412,8 @@ def main():
     keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
     keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
+    keyboard.add_hotkey(BROWSER_BACK_HOTKEY, lambda: _browser_nav(back=True))
+    keyboard.add_hotkey(BROWSER_FORWARD_HOTKEY, lambda: _browser_nav(back=False))
     keyboard.on_press_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_press(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_release_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_release(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_press_key(VOLUME_DOWN_HOTKEY, lambda e: _volume_press(VOLUME_DOWN_HOTKEY, up=False))
@@ -419,6 +428,8 @@ def main():
     print("  F16              Hard Refresh (Ctrl+F5)")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
+    print("  Shift+F23        Browser Back (Alt+Left)")
+    print("  Shift+F24        Browser Forward (Alt+Right)")
     print("  F22              Toggle Desktop (Win+D)")
     print("  F23              Volume Down")
     print("  F24              Volume Up")
