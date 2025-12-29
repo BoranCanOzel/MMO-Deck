@@ -11,8 +11,8 @@ Hotkeys:
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
   F19               -> Print Screen
-  Shift+F23         -> Switch desktop left (Win+Ctrl+Left)
-  Shift+F24         -> Switch desktop right (Win+Ctrl+Right)
+  Ctrl+F23          -> Switch desktop left (Win+Ctrl+Left)
+  Ctrl+F24          -> Switch desktop right (Win+Ctrl+Right)
   F22               -> Toggle Desktop (Win+D)
   F23               -> Volume Down (direct)
   F24               -> Volume Up (direct)
@@ -730,14 +730,14 @@ def _handle_f23_press(e):
     # Debug logging noisy during normal use; keep commented for troubleshooting.
     # proc = _get_foreground_process_name()
     # print(f"Active process: {proc or 'unknown'}")
-    if keyboard.is_pressed("shift"):
+    if keyboard.is_pressed("ctrl"):
         _switch_virtual_desktop(back=True)
         return
     _volume_press(VOLUME_DOWN_HOTKEY, up=False)
 
 
 def _handle_f23_release(e):
-    if keyboard.is_pressed("shift"):
+    if keyboard.is_pressed("ctrl"):
         return
     _volume_release(VOLUME_DOWN_HOTKEY)
 
@@ -746,14 +746,14 @@ def _handle_f24_press(e):
     # Debug logging noisy during normal use; keep commented for troubleshooting.
     # proc = _get_foreground_process_name()
     # print(f"Active process: {proc or 'unknown'}")
-    if keyboard.is_pressed("shift"):
+    if keyboard.is_pressed("ctrl"):
         _switch_virtual_desktop(back=False)
         return
     _volume_press(VOLUME_UP_HOTKEY, up=True)
 
 
 def _handle_f24_release(e):
-    if keyboard.is_pressed("shift"):
+    if keyboard.is_pressed("ctrl"):
         return
     _volume_release(VOLUME_UP_HOTKEY)
 
@@ -908,8 +908,8 @@ def main():
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
     print("  F19              Print Screen")
-    print("  Shift+F23        Switch desktop left (Win+Ctrl+Left)")
-    print("  Shift+F24        Switch desktop right (Win+Ctrl+Right)")
+    print("  Ctrl+F23         Switch desktop left (Win+Ctrl+Left)")
+    print("  Ctrl+F24         Switch desktop right (Win+Ctrl+Right)")
     print("  F22              Toggle Desktop (Win+D)")
     print("  F23              Volume Down")
     print("  F24              Volume Up")
