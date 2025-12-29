@@ -10,8 +10,8 @@ Hotkeys:
   F16               -> Tap: Refresh (Ctrl+R / Ctrl+/), Hold: Hard Refresh (Ctrl+F5 or Ctrl+/)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
-  Shift+F23         -> Browser Back (Alt+Left, only in Chrome)
-  Shift+F24         -> Browser Forward (Alt+Right, only in Chrome)
+  Shift+F23         -> Switch desktop left (Win+Ctrl+Left)
+  Shift+F24         -> Switch desktop right (Win+Ctrl+Right)
   F22               -> Toggle Desktop (Win+D)
   F23               -> Volume Down (direct)
   F24               -> Volume Up (direct)
@@ -518,6 +518,23 @@ def _browser_nav(back: bool):
     _key_event(VK_MENU, up=True)
 
 
+def _switch_virtual_desktop(back: bool):
+    # Send Win+Ctrl+Left/Right; temporarily release Shift so it doesn't move windows
+    had_shift = keyboard.is_pressed("shift")
+    if had_shift:
+        keyboard.release("shift")
+    try:
+        _key_event(VK_LWIN)
+        _key_event(VK_CONTROL)
+        _key_event(VK_LEFT if back else VK_RIGHT)
+        _key_event(VK_LEFT if back else VK_RIGHT, up=True)
+        _key_event(VK_CONTROL, up=True)
+        _key_event(VK_LWIN, up=True)
+    finally:
+        if had_shift:
+            keyboard.press("shift")
+
+
 def _tab_press(name: str, shift: bool):
     if name in _tab_state:
         return
@@ -671,15 +688,28 @@ def _volume_release(name: str):
         stop_evt.set()
 
 
+def _legacy_shift_f23_action():
+    # Preserved old behavior: browser back or Ctrl+Z
+    if _is_browser_window():
+        _browser_nav(back=True)
+    else:
+        _send_ctrl_combo("z")
+
+
+def _legacy_shift_f24_action():
+    # Preserved old behavior: browser forward or Ctrl+Y
+    if _is_browser_window():
+        _browser_nav(back=False)
+    else:
+        _send_ctrl_combo("y")
+
+
 def _handle_f23_press(e):
     # Debug logging noisy during normal use; keep commented for troubleshooting.
     # proc = _get_foreground_process_name()
     # print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
-        if _is_browser_window():
-            _browser_nav(back=True)
-        else:
-            _send_ctrl_combo("z")
+        _switch_virtual_desktop(back=True)
         return
     _volume_press(VOLUME_DOWN_HOTKEY, up=False)
 
@@ -695,10 +725,7 @@ def _handle_f24_press(e):
     # proc = _get_foreground_process_name()
     # print(f"Active process: {proc or 'unknown'}")
     if keyboard.is_pressed("shift"):
-        if _is_browser_window():
-            _browser_nav(back=False)
-        else:
-            _send_ctrl_combo("y")
+        _switch_virtual_desktop(back=False)
         return
     _volume_press(VOLUME_UP_HOTKEY, up=True)
 
@@ -857,8 +884,8 @@ def main():
     print("  F16              Tap: Refresh / Hold: Hard Refresh")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
-    print("  Shift+F23        Browser Back (Alt+Left)")
-    print("  Shift+F24        Browser Forward (Alt+Right)")
+    print("  Shift+F23        Switch desktop left (Win+Ctrl+Left)")
+    print("  Shift+F24        Switch desktop right (Win+Ctrl+Right)")
     print("  F22              Toggle Desktop (Win+D)")
     print("  F23              Volume Down")
     print("  F24              Volume Up")
