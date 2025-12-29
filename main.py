@@ -10,6 +10,7 @@ Hotkeys:
   F16               -> Tap: Refresh (Ctrl+R / Ctrl+/), Hold: Hard Refresh (Ctrl+F5 or Ctrl+/)
   F17               -> Prev tab  (Ctrl+Shift+Tab)
   F18               -> Next tab  (Ctrl+Tab)
+  F19               -> Print Screen
   Shift+F23         -> Switch desktop left (Win+Ctrl+Left)
   Shift+F24         -> Switch desktop right (Win+Ctrl+Right)
   F22               -> Toggle Desktop (Win+D)
@@ -55,6 +56,7 @@ RIGHT_HOTKEY = "f15"
 REFRESH_HOTKEY   = "f16"
 PREV_TAB_HOTKEY  = "f17"
 NEXT_TAB_HOTKEY  = "f18"
+PRINT_SCREEN_HOTKEY = "f19"
 
 BROWSER_BACK_HOTKEY = "shift+f23"
 BROWSER_FORWARD_HOTKEY = "shift+f24"
@@ -88,6 +90,7 @@ ES_DISPLAY_REQUIRED = 0x00000002
 _last_trigger = 0.0
 
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_EXTENDEDKEY = 0x0001
 VK_CONTROL = 0x11
 VK_F5 = 0x74
 VK_SHIFT = 0x10
@@ -102,6 +105,7 @@ VK_LWIN = 0x5B
 VK_D = 0x44
 VK_VOLUME_UP = 0xAF
 VK_VOLUME_DOWN = 0xAE
+VK_SNAPSHOT = 0x2C  # Print Screen
 
 _volume_endpoint = None
 _tab_state = {}
@@ -483,6 +487,24 @@ def _refresh_hold():
     else:
         print("Refresh (hold): non-browser (Ctrl+/)")
         _send_ctrl_slash()
+
+
+def _print_screen():
+    # Release modifiers to avoid Win/Alt/Shift altering the snapshot behavior
+    released = []
+    for mod in ("windows", "alt", "ctrl", "shift"):
+        if keyboard.is_pressed(mod):
+            keyboard.release(mod)
+            released.append(mod)
+    try:
+        # Simple, reliable: ask keyboard to send Print Screen; fallback to direct key events
+        keyboard.send("print screen")
+    except Exception:
+        _key_event(VK_SNAPSHOT)
+        _key_event(VK_SNAPSHOT, up=True)
+    finally:
+        for mod in released:
+            keyboard.press(mod)
 
 
 def _send_tab_combo(shift: bool):
@@ -868,6 +890,7 @@ def main():
     keyboard.on_release_key(PREV_TAB_HOTKEY, lambda e: _tab_release(PREV_TAB_HOTKEY))
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
     keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
+    keyboard.on_press_key(PRINT_SCREEN_HOTKEY, lambda e: _print_screen())
     keyboard.on_press_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_press(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_release_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_release(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_press_key(VOLUME_DOWN_HOTKEY, _handle_f23_press)
@@ -884,6 +907,7 @@ def main():
     print("  F16              Tap: Refresh / Hold: Hard Refresh")
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
+    print("  F19              Print Screen")
     print("  Shift+F23        Switch desktop left (Win+Ctrl+Left)")
     print("  Shift+F24        Switch desktop right (Win+Ctrl+Right)")
     print("  F22              Toggle Desktop (Win+D)")
