@@ -13,6 +13,7 @@ Hotkeys:
   F19               -> Print Screen
   Ctrl+F23          -> Switch desktop left (Win+Ctrl+Left)
   Ctrl+F24          -> Switch desktop right (Win+Ctrl+Right)
+  F21               -> Open This PC
   F22               -> Toggle Desktop (Win+D)
   F23               -> Volume Down (direct)
   F24               -> Volume Up (direct)
@@ -28,6 +29,7 @@ import ctypes
 import threading
 import tkinter as tk
 from tkinter import ttk
+import subprocess
 
 import keyboard
 import win32gui
@@ -63,6 +65,7 @@ BROWSER_FORWARD_HOTKEY = "shift+f24"
 VOLUME_DOWN_HOTKEY = "f23"
 VOLUME_UP_HOTKEY   = "f24"
 TOGGLE_DESKTOP_HOTKEY = "f22"
+OPEN_THIS_PC_HOTKEY = "f21"
 
 # ---------------- TUNING KNOBS ----------------
 # Window sizing
@@ -111,6 +114,7 @@ _volume_endpoint = None
 _tab_state = {}
 _volume_state = {}
 _toggle_state = set()
+_this_pc_state = set()
 _maximize_state = set()
 _shell_app = None
 _refresh_state = {}
@@ -758,6 +762,30 @@ def _handle_f24_release(e):
     _volume_release(VOLUME_UP_HOTKEY)
 
 
+def _open_this_pc():
+    try:
+        os.startfile("shell:MyComputerFolder")
+        return
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(["explorer.exe", "shell:MyComputerFolder"])
+    except Exception as exc:
+        print(f"This PC: failed to open ({exc})")
+
+
+def _open_this_pc_press(name: str):
+    # Fire once per physical press to avoid repeat-open on key auto-repeat
+    if name in _this_pc_state:
+        return
+    _this_pc_state.add(name)
+    _open_this_pc()
+
+
+def _open_this_pc_release(name: str):
+    _this_pc_state.discard(name)
+
+
 def _prevent_sleep():
     # Keep the system awake while the hotkey listener runs
     kernel32 = ctypes.windll.kernel32
@@ -891,6 +919,8 @@ def main():
     keyboard.on_press_key(NEXT_TAB_HOTKEY, lambda e: _tab_press(NEXT_TAB_HOTKEY, shift=False))
     keyboard.on_release_key(NEXT_TAB_HOTKEY, lambda e: _tab_release(NEXT_TAB_HOTKEY))
     keyboard.on_press_key(PRINT_SCREEN_HOTKEY, lambda e: _print_screen())
+    keyboard.on_press_key(OPEN_THIS_PC_HOTKEY, lambda e: _open_this_pc_press(OPEN_THIS_PC_HOTKEY))
+    keyboard.on_release_key(OPEN_THIS_PC_HOTKEY, lambda e: _open_this_pc_release(OPEN_THIS_PC_HOTKEY))
     keyboard.on_press_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_press(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_release_key(TOGGLE_DESKTOP_HOTKEY, lambda e: _toggle_desktop_release(TOGGLE_DESKTOP_HOTKEY))
     keyboard.on_press_key(VOLUME_DOWN_HOTKEY, _handle_f23_press)
@@ -908,6 +938,7 @@ def main():
     print("  F17              Prev tab (Ctrl+Shift+Tab)")
     print("  F18              Next tab (Ctrl+Tab)")
     print("  F19              Print Screen")
+    print("  F21              Open This PC")
     print("  Ctrl+F23         Switch desktop left (Win+Ctrl+Left)")
     print("  Ctrl+F24         Switch desktop right (Win+Ctrl+Right)")
     print("  F22              Toggle Desktop (Win+D)")

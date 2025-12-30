@@ -16,7 +16,10 @@ if not exist "%EVB_EXE%" (
     exit /b 1
 )
 
-"%EVB_EXE%" "vb.evb"
+set "INPUT=%CD%\MMO Deck.exe"
+set "OUTPUT=%CD%\MMO Deck_boxed.exe"
+
+"%EVB_EXE%" "vb.evb" -input "%INPUT%" -output "%OUTPUT%"
 set "ERR=%ERRORLEVEL%"
 if not "%ERR%"=="0" (
     echo Packaging failed with error %ERR%.
